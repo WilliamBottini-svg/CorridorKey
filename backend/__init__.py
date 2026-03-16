@@ -25,6 +25,7 @@ from .project import (
     read_project_json,
     sanitize_stem,
     set_display_name,
+    set_projects_root,
     write_clip_json,
     write_project_json,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "CorridorKeyError",
     # Project utilities
     "projects_root",
+    "set_projects_root",
     "create_project",
     "add_clips_to_project",
     "sanitize_stem",

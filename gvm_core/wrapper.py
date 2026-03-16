@@ -11,6 +11,57 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+
+# ── MPS compatibility shims ─────────────────────────────────────────
+# PyTorch 2.7+ MPS backend has several ops whose C++ signatures differ
+# from the CUDA/CPU paths.  We monkey-patch at import time so the rest
+# of the code (and diffusers internals) never sees the mismatch.
+
+# 1) set_grad_enabled(bool) can fail on MPS after many batches.
+_orig_set_grad_enabled = torch.set_grad_enabled
+def _safe_set_grad_enabled(mode):
+    try:
+        return _orig_set_grad_enabled(mode)
+    except TypeError:
+        return _orig_set_grad_enabled(bool(mode))
+torch.set_grad_enabled = _safe_set_grad_enabled
+
+# 2) group_norm() on MPS rejects the trailing cudnn_enabled bool that
+#    the CUDA path accepts: (Tensor, int, Parameter, Parameter, float, bool).
+#    Strip it out or fall back to CPU for that operation.
+_orig_group_norm = F.group_norm
+def _safe_group_norm(input, num_groups, weight=None, bias=None, eps=1e-5, **kwargs):
+    try:
+        return _orig_group_norm(input, num_groups, weight=weight, bias=bias, eps=eps)
+    except TypeError:
+        # Fall back to CPU, compute, then move back to original device
+        device = input.device
+        result = _orig_group_norm(
+            input.cpu(),
+            num_groups,
+            weight=weight.cpu() if weight is not None else None,
+            bias=bias.cpu() if bias is not None else None,
+            eps=eps,
+        )
+        return result.to(device)
+F.group_norm = _safe_group_norm
+
+# 3) layer_norm() can hit the same issue on MPS with trailing bool args.
+_orig_layer_norm = F.layer_norm
+def _safe_layer_norm(input, normalized_shape, weight=None, bias=None, eps=1e-5, **kwargs):
+    try:
+        return _orig_layer_norm(input, normalized_shape, weight=weight, bias=bias, eps=eps)
+    except TypeError:
+        device = input.device
+        result = _orig_layer_norm(
+            input.cpu(),
+            normalized_shape,
+            weight=weight.cpu() if weight is not None else None,
+            bias=bias.cpu() if bias is not None else None,
+            eps=eps,
+        )
+        return result.to(device)
+F.layer_norm = _safe_layer_norm
 from torchvision import transforms
 from torchvision.transforms import ToTensor, Resize, Compose
 from diffusers import AutoencoderKLTemporalDecoder, FlowMatchEulerDiscreteScheduler
@@ -225,7 +276,10 @@ class GVMProcessor:
         upper_bound = 240./255.
         lower_bound = 25./ 255.
 
-        for batch_id, batch in tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Inferencing {file_name}"):
+        total_batches = len(dataloader)
+        for batch_id, batch in tqdm(enumerate(dataloader), total=total_batches, desc=f"Inferencing {file_name}"):
+            if progress_callback:
+                progress_callback(batch_id, total_batches)
             filenames = []
             if is_video:
                 b, _, h, w = batch.shape
@@ -240,7 +294,7 @@ class GVMProcessor:
             batch, pad_info = impad_multi(batch)
 
             # Inference
-            with torch.no_grad():
+            with torch.inference_mode():
                 pipe_out = self.pipe(
                     batch.to(self.device, dtype=torch.float16),
                     num_frames=num_frames_per_batch,
@@ -276,9 +330,10 @@ class GVMProcessor:
             if writer_alpha: writer_alpha.write(alpha)
             writer_alpha_seq.write(alpha, filenames=filenames)
 
-            if progress_callback is not None:
-                progress_callback(batch_id + 1, len(dataloader))
-        
+            # Free MPS memory between batches to avoid accumulation crashes
+            if self.device.type == "mps":
+                torch.mps.empty_cache()
+
         if writer_alpha: writer_alpha.close()
         writer_alpha_seq.close()
         logging.info(f"Finished {file_name}")

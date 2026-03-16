@@ -35,6 +35,7 @@ _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".exr", ".tif", ".tiff", ".bmp
 VIDEO_FILE_FILTER = "Video Files (*.mp4 *.mov *.avi *.mkv *.mxf *.webm *.m4v);;All Files (*)"
 
 _app_dir: str | None = None
+_custom_projects_root: str | None = None
 
 
 def _dedupe_path(parent_dir: str, stem: str) -> tuple[str, str]:
@@ -65,19 +66,30 @@ def set_app_dir(path: str) -> None:
     _app_dir = path
 
 
+def set_projects_root(path: str | None) -> None:
+    """Override the default projects root directory.
+
+    Called by the GUI when the user picks a custom output location.
+    Pass None to revert to the default ~/Documents/CorridorKey/Projects/.
+    """
+    global _custom_projects_root
+    _custom_projects_root = path
+
+
 def projects_root() -> str:
     """Return the Projects root directory, creating it if needed.
 
-    In dev mode: {repo_root}/Projects/
-    In frozen mode: {exe_dir}/Projects/
+    Always uses ~/Documents/CorridorKey/Projects/ so that project files
+    are never written inside the application repo or bundle.
+    A custom root can be set via set_projects_root() (e.g. from the
+    output-location picker in the GUI).
     """
-    if _app_dir:
-        root = os.path.join(_app_dir, "Projects")
-    elif getattr(sys, "frozen", False):
-        root = os.path.join(os.path.dirname(sys.executable), "Projects")
+    if _custom_projects_root:
+        root = _custom_projects_root
     else:
-        # Fallback: two levels up from this file (backend/ -> repo root)
-        root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Projects")
+        root = os.path.join(
+            os.path.expanduser("~"), "Documents", "CorridorKey", "Projects"
+        )
     os.makedirs(root, exist_ok=True)
     return root
 

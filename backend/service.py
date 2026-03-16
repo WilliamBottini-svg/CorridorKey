@@ -353,6 +353,55 @@ class CorridorKeyService:
             logger.debug("device_utils not available for cache clear during unload")
         logger.info("All engines unloaded, VRAM freed")
 
+    # --- Clip Import ---
+
+    def import_clip(self, path: str) -> ClipEntry:
+        """Import a single clip from a file or directory path.
+
+        Handles three cases:
+        - Directory: treat as clip folder, scan for assets via find_assets()
+        - Video file: create an EXTRACTING clip entry
+        - Image file: treat parent directory as clip folder
+
+        Returns:
+            ClipEntry with assets populated and appropriate state.
+
+        Raises:
+            CorridorKeyError: If the path is invalid or unsupported.
+        """
+        from .project import is_video_file
+
+        path = os.path.abspath(path)
+
+        if not os.path.exists(path):
+            raise CorridorKeyError(f"Path does not exist: {path}")
+
+        if os.path.isdir(path):
+            name = os.path.basename(path)
+            clip = ClipEntry(name=name, root_path=path)
+            clip.find_assets()
+            return clip
+
+        if os.path.isfile(path):
+            if is_video_file(path):
+                name = os.path.splitext(os.path.basename(path))[0]
+                clip = ClipEntry(
+                    name=name,
+                    root_path=os.path.dirname(path),
+                    state=ClipState.EXTRACTING,
+                )
+                clip.input_asset = ClipAsset(path, "video")
+                return clip
+
+            # Image file — treat parent dir as clip folder
+            parent = os.path.dirname(path)
+            name = os.path.basename(parent)
+            clip = ClipEntry(name=name, root_path=parent)
+            clip.find_assets()
+            return clip
+
+        raise CorridorKeyError(f"Unsupported path type: {path}")
+
     # --- Clip Scanning ---
 
     def scan_clips(
@@ -800,6 +849,7 @@ class CorridorKeyService:
         job: GPUJob | None = None,
         on_progress: Callable[[str, int, int], None] | None = None,
         on_warning: Callable[[str], None] | None = None,
+        max_frames: int | None = None,
     ) -> None:
         """Run GVM auto alpha generation for a clip.
 
@@ -848,6 +898,7 @@ class CorridorKeyService:
                 write_video=False,
                 direct_output_dir=alpha_dir,
                 progress_callback=_gvm_progress,
+                max_frames=max_frames,
             )
         except JobCancelledError:
             raise

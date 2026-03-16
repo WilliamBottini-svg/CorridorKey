@@ -52,7 +52,7 @@ class ClipState(Enum):
 
 # Valid transitions: from_state -> set of allowed to_states
 _TRANSITIONS: dict[ClipState, set[ClipState]] = {
-    ClipState.EXTRACTING: {ClipState.RAW, ClipState.ERROR},
+    ClipState.EXTRACTING: {ClipState.RAW, ClipState.READY, ClipState.ERROR},
     ClipState.RAW: {ClipState.MASKED, ClipState.READY, ClipState.ERROR},
     ClipState.MASKED: {ClipState.READY, ClipState.ERROR},
     ClipState.READY: {ClipState.COMPLETE, ClipState.ERROR},
@@ -349,18 +349,15 @@ class ClipEntry:
                 self.state = ClipState.COMPLETE
                 return
 
-        # READY: AlphaHint must cover ALL input frames (not partial)
+        # READY: AlphaHint exists (even partial — user may be using frame range preview)
         if self.alpha_asset is not None:
             if self.input_asset is not None and self.alpha_asset.frame_count < self.input_asset.frame_count:
-                # Partial alpha — don't promote to READY, fall through
                 logger.info(
                     f"Clip '{self.name}': partial alpha "
-                    f"({self.alpha_asset.frame_count}/{self.input_asset.frame_count}), "
-                    f"staying at lower state"
+                    f"({self.alpha_asset.frame_count}/{self.input_asset.frame_count})"
                 )
-            else:
-                self.state = ClipState.READY
-                return
+            self.state = ClipState.READY
+            return
 
         if self.mask_asset is not None:
             self.state = ClipState.MASKED

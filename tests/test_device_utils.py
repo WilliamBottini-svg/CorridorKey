@@ -5,13 +5,16 @@ and clear_device_cache() using monkeypatch to mock hardware availability.
 No GPU required.
 """
 
+import os
 from unittest.mock import MagicMock
 
 import pytest
 import torch
 
+import device_utils
 from device_utils import (
     DEVICE_ENV_VAR,
+    _configure_mps_environment,
     clear_device_cache,
     detect_best_device,
     resolve_device,
@@ -29,6 +32,8 @@ def _patch_gpu(monkeypatch, *, cuda=False, mps=False):
     mps_backend = MagicMock()
     mps_backend.is_available = MagicMock(return_value=mps)
     monkeypatch.setattr(torch.backends, "mps", mps_backend)
+    # Reset the once-only guard so each test starts clean
+    monkeypatch.setattr(device_utils, "_mps_env_configured", False)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +138,60 @@ class TestResolveDevice:
     def test_invalid_device_raises(self, monkeypatch):
         with pytest.raises(RuntimeError, match="Unknown device"):
             resolve_device("tpu")
+
+
+# ---------------------------------------------------------------------------
+# _configure_mps_environment
+# ---------------------------------------------------------------------------
+
+
+class TestConfigureMpsEnvironment:
+    """MPS env tweaks are applied exactly once and respect user overrides."""
+
+    def test_sets_timm_fused_attn(self, monkeypatch):
+        monkeypatch.setattr(device_utils, "_mps_env_configured", False)
+        monkeypatch.delenv("TIMM_FUSED_ATTN", raising=False)
+        _configure_mps_environment()
+        assert os.environ.get("TIMM_FUSED_ATTN") == "0"
+
+    def test_respects_user_override(self, monkeypatch):
+        monkeypatch.setattr(device_utils, "_mps_env_configured", False)
+        monkeypatch.setenv("TIMM_FUSED_ATTN", "1")
+        _configure_mps_environment()
+        assert os.environ["TIMM_FUSED_ATTN"] == "1"  # not overwritten
+
+    def test_runs_only_once(self, monkeypatch):
+        monkeypatch.setattr(device_utils, "_mps_env_configured", False)
+        monkeypatch.delenv("TIMM_FUSED_ATTN", raising=False)
+        _configure_mps_environment()
+        # Manually set a different value; second call should NOT overwrite
+        os.environ["TIMM_FUSED_ATTN"] = "999"
+        _configure_mps_environment()
+        assert os.environ["TIMM_FUSED_ATTN"] == "999"  # guard prevented re-run
+
+    def test_detect_best_device_triggers_on_mps(self, monkeypatch):
+        _patch_gpu(monkeypatch, cuda=False, mps=True)
+        monkeypatch.delenv("TIMM_FUSED_ATTN", raising=False)
+        detect_best_device()
+        assert os.environ.get("TIMM_FUSED_ATTN") == "0"
+
+    def test_resolve_device_explicit_mps_triggers(self, monkeypatch):
+        _patch_gpu(monkeypatch, mps=True)
+        monkeypatch.delenv("TIMM_FUSED_ATTN", raising=False)
+        resolve_device("mps")
+        assert os.environ.get("TIMM_FUSED_ATTN") == "0"
+
+    def test_cuda_does_not_trigger(self, monkeypatch):
+        _patch_gpu(monkeypatch, cuda=True)
+        monkeypatch.delenv("TIMM_FUSED_ATTN", raising=False)
+        resolve_device("cuda")
+        assert "TIMM_FUSED_ATTN" not in os.environ
+
+    def test_cpu_does_not_trigger(self, monkeypatch):
+        _patch_gpu(monkeypatch, cuda=False, mps=False)
+        monkeypatch.delenv("TIMM_FUSED_ATTN", raising=False)
+        resolve_device("cpu")
+        assert "TIMM_FUSED_ATTN" not in os.environ
 
 
 # ---------------------------------------------------------------------------

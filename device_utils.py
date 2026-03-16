@@ -1,4 +1,8 @@
-"""Centralized cross-platform device selection for CorridorKey."""
+"""Centralized cross-platform device selection for CorridorKey.
+
+Also applies MPS-specific environment tweaks (TIMM_FUSED_ATTN, etc.)
+**before** any ML library is first imported, so that the flags take effect.
+"""
 
 import logging
 import os
@@ -7,6 +11,51 @@ logger = logging.getLogger(__name__)
 
 DEVICE_ENV_VAR = "CORRIDORKEY_DEVICE"
 VALID_DEVICES = ("auto", "cuda", "mps", "cpu")
+
+_mps_env_configured = False  # guard so we only log once
+
+
+def _configure_mps_environment() -> None:
+    """Set environment variables that make MPS inference safer.
+
+    Must be called **before** ``import timm`` / first use of SDPA so that
+    the flags are picked up at module-init time.
+
+    What this does and why:
+
+    TIMM_FUSED_ATTN=0
+        Tells timm to use the manual attention path (matmul → softmax →
+        matmul) instead of ``F.scaled_dot_product_attention``.  The MPS
+        SDPA backend has a history of correctness issues:
+        • Out-of-bounds memory access at seq-len ≥ 1024  (pytorch#174861)
+        • Wrong output shape when value-dim ≠ query-dim  (pytorch#176767)
+        • Regression on non-contiguous query tensors      (pytorch#163597)
+        Disabling fused attention sidesteps all of these with negligible
+        performance cost during inference.
+
+    PYTORCH_ENABLE_MPS_FALLBACK is intentionally NOT set — it only catches
+    ``NotImplementedError`` and misses silent correctness bugs, which are
+    the real threat.  All ops used by CorridorKey are already implemented
+    on MPS, so the flag provides no benefit.
+    """
+    global _mps_env_configured
+    if _mps_env_configured:
+        return
+    _mps_env_configured = True
+
+    tweaks: list[str] = []
+
+    # --- Disable SDPA in timm (Hiera attention) ---------------------
+    if "TIMM_FUSED_ATTN" not in os.environ:
+        os.environ["TIMM_FUSED_ATTN"] = "0"
+        tweaks.append("TIMM_FUSED_ATTN=0  (disable SDPA — MPS correctness safeguard)")
+    else:
+        tweaks.append(f"TIMM_FUSED_ATTN={os.environ['TIMM_FUSED_ATTN']}  (user override)")
+
+    if tweaks:
+        logger.info("MPS environment configured:")
+        for t in tweaks:
+            logger.info("  • %s", t)
 
 
 def is_rocm_system() -> bool:
@@ -58,6 +107,7 @@ def detect_best_device() -> str:
         device = "cuda"
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         device = "mps"
+        _configure_mps_environment()
     else:
         device = "cpu"
     logger.info("Auto-selected device: %s", device)
@@ -106,6 +156,7 @@ def resolve_device(requested: str | None = None) -> str:
             raise RuntimeError(
                 "MPS requested but not available on this machine. Requires Apple Silicon (M1+) with macOS 12.3+."
             )
+        _configure_mps_environment()
 
     return device
 
