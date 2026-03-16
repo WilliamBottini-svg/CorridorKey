@@ -230,9 +230,10 @@ class PreviewPanel(ctk.CTkFrame):
         if not root or not os.path.isdir(root):
             return None, 0, 0
 
-        # Map mode to subdirectory names
+        # Map mode to subdirectory names — never search root_path itself (".")
+        # to avoid listing unrelated files from the source/parent directory.
         mode_dirs = {
-            "Input": [".", "Input", "Frames", "Source"],
+            "Input": ["Input", "Frames", "Source"],
             "Matte": ["Output/Matte", "Matte", "matte"],
             "FG": ["Output/FG", "FG", "fg", "Foreground"],
             "Comp": ["Output/Comp", "Comp", "comp", "Composite"],
@@ -242,7 +243,7 @@ class PreviewPanel(ctk.CTkFrame):
         image_exts = (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".exr")
 
         for subdir in mode_dirs.get(mode, [mode]):
-            search_dir = os.path.join(root, subdir) if subdir != "." else root
+            search_dir = os.path.join(root, subdir)
             if not os.path.isdir(search_dir):
                 continue
             image_files = []
@@ -303,9 +304,9 @@ class PreviewPanel(ctk.CTkFrame):
         if not root:
             return None, None
 
-        # Check common input directories for a frame
-        for subdir in [".", "Input", "Frames", "Source"]:
-            search_dir = os.path.join(root, subdir) if subdir != "." else root
+        # Check common input directories for a frame — skip root_path itself
+        for subdir in ["Input", "Frames", "Source"]:
+            search_dir = os.path.join(root, subdir)
             if not os.path.isdir(search_dir):
                 continue
             for fname in sorted(os.listdir(search_dir)):

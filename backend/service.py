@@ -359,9 +359,12 @@ class CorridorKeyService:
         """Import a single clip from a file or directory path.
 
         Handles three cases:
-        - Directory: treat as clip folder, scan for assets via find_assets()
-        - Video file: create an EXTRACTING clip entry
-        - Image file: treat parent directory as clip folder
+        - Directory that is already a project clip folder: scan for assets
+        - Video file: create a project, copy the video in, return the clip
+        - Image file: create a project from the parent image sequence
+
+        Always creates a proper project structure under the projects root
+        so that preview and processing never reference the source location.
 
         Returns:
             ClipEntry with assets populated and appropriate state.
@@ -369,7 +372,7 @@ class CorridorKeyService:
         Raises:
             CorridorKeyError: If the path is invalid or unsupported.
         """
-        from .project import is_video_file
+        from .project import create_project, is_image_file, is_video_file, projects_root
 
         path = os.path.abspath(path)
 
@@ -384,21 +387,86 @@ class CorridorKeyService:
 
         if os.path.isfile(path):
             if is_video_file(path):
-                name = os.path.splitext(os.path.basename(path))[0]
-                clip = ClipEntry(
-                    name=name,
-                    root_path=os.path.dirname(path),
-                    state=ClipState.EXTRACTING,
-                )
-                clip.input_asset = ClipAsset(path, "video")
-                return clip
+                # Create a proper project structure and copy the video in
+                project_dir = create_project(path, copy_source=True)
+                from .clip_state import scan_project_clips
 
-            # Image file — treat parent dir as clip folder
-            parent = os.path.dirname(path)
-            name = os.path.basename(parent)
-            clip = ClipEntry(name=name, root_path=parent)
-            clip.find_assets()
-            return clip
+                clips = scan_project_clips(project_dir)
+                if clips:
+                    return clips[0]
+                # Fallback: if scan found nothing, the extraction hasn't
+                # happened yet — build a ClipEntry pointing at the project clip dir.
+                from .project import get_clip_dirs
+
+                clip_dirs = get_clip_dirs(project_dir)
+                if clip_dirs:
+                    clip_dir = clip_dirs[0]
+                    name = os.path.basename(clip_dir)
+                    clip = ClipEntry(
+                        name=name,
+                        root_path=clip_dir,
+                        state=ClipState.EXTRACTING,
+                    )
+                    # Use the copied video in Source/ if available,
+                    # otherwise fall back to the original path
+                    source_dir = os.path.join(clip_dir, "Source")
+                    copied_videos = [
+                        f for f in os.listdir(source_dir)
+                        if is_video_file(f)
+                    ] if os.path.isdir(source_dir) else []
+                    if copied_videos:
+                        clip.input_asset = ClipAsset(
+                            os.path.join(source_dir, copied_videos[0]), "video"
+                        )
+                    else:
+                        clip.input_asset = ClipAsset(path, "video")
+                    return clip
+                raise CorridorKeyError(f"Failed to create project for: {path}")
+
+            if is_image_file(path):
+                # Image file — gather all images from the parent directory
+                # and import them as a project
+                parent = os.path.dirname(path)
+                # Create a project; create_project expects video paths, so
+                # instead we manually set up the project structure for an
+                # image sequence.
+                from .project import _dedupe_path, sanitize_stem, write_project_json
+
+                import shutil
+                from datetime import datetime
+
+                root = projects_root()
+                name_stem = sanitize_stem(os.path.basename(parent))
+                timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+                folder_name = f"{timestamp}_{name_stem}"
+                project_dir, _ = _dedupe_path(root, folder_name)
+
+                clips_dir = os.path.join(project_dir, "clips")
+                clip_dir = os.path.join(clips_dir, name_stem)
+                input_dir = os.path.join(clip_dir, "Input")
+                os.makedirs(input_dir, exist_ok=True)
+
+                # Copy all image files from the parent directory
+                for fname in sorted(os.listdir(parent)):
+                    if is_image_file(fname):
+                        src = os.path.join(parent, fname)
+                        dst = os.path.join(input_dir, fname)
+                        if not os.path.isfile(dst):
+                            shutil.copy2(src, dst)
+
+                write_project_json(
+                    project_dir,
+                    {
+                        "version": 2,
+                        "created": datetime.now().isoformat(),
+                        "display_name": name_stem.replace("_", " "),
+                        "clips": [name_stem],
+                    },
+                )
+
+                clip = ClipEntry(name=name_stem, root_path=clip_dir)
+                clip.find_assets()
+                return clip
 
         raise CorridorKeyError(f"Unsupported path type: {path}")
 
