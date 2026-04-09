@@ -776,6 +776,7 @@ class CorridorKeyService:
                             auto_despeckle=params.auto_despeckle,
                             despeckle_size=params.despeckle_size,
                             refiner_scale=params.refiner_scale,
+                            post_process_on_gpu=(self._device != "mps"),
                         )
                     logger.debug(f"Clip '{clip.name}' frame {i}: process_frame {time.monotonic() - t_frame:.3f}s")
 
@@ -905,6 +906,7 @@ class CorridorKeyService:
                 auto_despeckle=params.auto_despeckle,
                 despeckle_size=params.despeckle_size,
                 refiner_scale=params.refiner_scale,
+                post_process_on_gpu=(self._device != "mps"),
             )
         logger.debug(f"Clip '{clip.name}' frame {frame_index}: reprocess {time.monotonic() - t_start:.3f}s")
         return res
